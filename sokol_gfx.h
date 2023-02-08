@@ -2638,6 +2638,7 @@ typedef struct sg_metal_context_desc {
     const void* (*renderpass_descriptor_userdata_cb)(void*);
     const void* (*drawable_cb)(void);
     const void* (*drawable_userdata_cb)(void*);
+    void (*pre_commit_cb)(void*);
     void* user_data;
 } sg_metal_context_desc;
 
@@ -4206,6 +4207,7 @@ typedef struct {
     const void*(*renderpass_descriptor_userdata_cb)(void*);
     const void*(*drawable_cb)(void);
     const void*(*drawable_userdata_cb)(void*);
+    void (*pre_commit_cb)(void*);
     void* user_data;
     uint32_t frame_index;
     uint32_t cur_frame_rotate_index;
@@ -10759,6 +10761,7 @@ _SOKOL_PRIVATE void _sg_mtl_setup_backend(const sg_desc* desc) {
     _sg.mtl.renderpass_descriptor_userdata_cb = desc->context.metal.renderpass_descriptor_userdata_cb;
     _sg.mtl.drawable_cb = desc->context.metal.drawable_cb;
     _sg.mtl.drawable_userdata_cb = desc->context.metal.drawable_userdata_cb;
+    _sg.mtl.pre_commit_cb = desc->context.metal.pre_commit_cb;
     _sg.mtl.user_data = desc->context.metal.user_data;
     _sg.mtl.frame_index = 1;
     _sg.mtl.ub_size = desc->uniform_buffer_size;
@@ -11559,6 +11562,9 @@ _SOKOL_PRIVATE void _sg_mtl_commit(void) {
         [_sg.mtl.present_cmd_buffer presentDrawable:cur_drawable];
     }
     [_sg.mtl.cmd_buffer commit];
+    if(nil != _sg.mtl.pre_commit_cb) {
+        _sg.mtl.pre_commit_cb((__bridge void*)_sg.mtl.present_cmd_buffer);
+    }
     [_sg.mtl.present_cmd_buffer commit];
 
     /* garbage-collect resources pending for release */
