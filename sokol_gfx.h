@@ -2634,6 +2634,7 @@ typedef struct sg_gl_context_desc {
 
 typedef struct sg_metal_context_desc {
     const void* device;
+    const void* queue;
     const void* (*renderpass_descriptor_cb)(void);
     const void* (*renderpass_descriptor_userdata_cb)(void*);
     const void* (*drawable_cb)(void);
@@ -10767,7 +10768,12 @@ _SOKOL_PRIVATE void _sg_mtl_setup_backend(const sg_desc* desc) {
     _sg.mtl.ub_size = desc->uniform_buffer_size;
     _sg.mtl.sem = dispatch_semaphore_create(SG_NUM_INFLIGHT_FRAMES);
     _sg.mtl.device = (__bridge id<MTLDevice>) desc->context.metal.device;
-    _sg.mtl.cmd_queue = [_sg.mtl.device newCommandQueue];
+    if(desc->context.metal.queue != NULL) {
+        _sg.mtl.cmd_queue = (__bridge id<MTLCommandQueue>)desc->context.metal.queue;
+    } 
+    else {
+        _sg.mtl.cmd_queue = [_sg.mtl.device newCommandQueue];
+    }
     for (int i = 0; i < SG_NUM_INFLIGHT_FRAMES; i++) {
         _sg.mtl.uniform_buffers[i] = [_sg.mtl.device
             newBufferWithLength:(NSUInteger)_sg.mtl.ub_size
