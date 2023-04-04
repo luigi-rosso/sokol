@@ -1,5 +1,145 @@
 ## Updates
 
+- **20-Feb-2023**: sokol_gfx.h has a new set of functions to get a 'best-effort'
+  desc struct with the creation parameters of a specific resource object:
+
+    ```c
+    sg_buffer_desc sg_query_buffer_desc(sg_buffer buf);
+    sg_image_desc sg_query_image_desc(sg_image img);
+    sg_shader_desc sg_query_shader_desc(sg_shader shd);
+    sg_pipeline_desc sg_query_pipeline_desc(sg_pipeline pip);
+    sg_pass_desc sg_query_pass_desc(sg_pass pass);
+    ```
+
+  The returned structs will *not* be an exact copy of the desc struct that
+  was used for creation the resource object, instead:
+
+    - references to external data (like buffer and image content or
+      shader sources) will be zeroed
+    - any attributes that have not been kept around internally after
+      creation will be zeroed (the ```sg_shader_desc``` struct is most
+      affected by this, the other structs are fairly complete).
+
+  Calling the functions with an invalid or dangling resource handle
+  will return a completely zeroed struct (thus it may make sense
+  to first check the resource state via ```sg_query_*_state()```)
+
+  Nevertheless, those functions may be useful to get a partially filled out
+  'creation blueprint' for creating similar resources without the need
+  to keep and pass around the original desc structs.
+
+  >MINOR BREAKING CHANGE: the struct members ```sg_image_info.width``` and
+  ```sg_image_info.height``` have been removed, this information is now
+  returned by ```sg_query_image_desc()```.
+
+  PR: https://github.com/floooh/sokol/pull/796, fixes: https://github.com/floooh/sokol/issues/568
+
+- **17-Feb-2023**: sokol_app.h on macOS now has a proper fix for the problem
+  that macOS doesn't send key-up events while the Cmd key is held down.
+  Previously this was handled through a workaround of immediately sending a
+  key-up event after its key-down event if the Cmd key is currently held down
+  to prevent a 'stuck key'. The proper fix is now to install an "event monitor"
+  callback (many thanks to GLFW for finding and implementing the solution).
+  Unfortunately there's no such solution for the Emscripten code path, which
+  also don't send a key-up event while Cmd is pressed on macOS (the workaround
+  there to send a key-up event right on key-down while Cmd is held down to
+  prevent a stuck key is still in place) For more details, see:
+  https://github.com/floooh/sokol/issues/794
+
+- **15-Feb-2023**: A fix in the sokol_gfx.h GL backend: due to a bug in the
+  state cache, the GL backend could only bind a total of
+  SG_MAX_SHADERSTAGE_IMAGES (= 12) when it actually should be twice that amount
+  (12 per shader stage). Note however that the total amount of texture bindings
+  is still internally limited by the GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
+  runtime variable (~~currently this is not exposed in sg_limits though~~). Many
+  thanks to @allcreater for PR https://github.com/floooh/sokol/pull/787.
+  PS: sg_limits now exposes GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS as
+  ```sg_limits.gl_max_combined_texture_image_units```, and the
+  value can also be inspected via the debug UI in sokol_gfx_imgui.h.
+
+- **13-Feb-2023**: The way logging works has been completely revamped in
+  the sokol headers. UWP support has been removed from sokol_audio.h
+  and sokol_app.h (this also means that the sokol headers no longer contain
+  any C++ code).
+
+  **REQUIRED ACTION**: Since the sokol headers are now completely silent
+  without a logging callback (explanation below), it is highly recommended
+  to use the standard logging callback provided by the new header ```sokol_log.h```.
+  For instance for sokol_gfx.h it looks like this:
+
+    ```c
+    #include "sokol_log.h"
+    //...
+        sg_setup(&(sg_desc){
+            //...
+            .logger.func = slog_func,
+        });
+    ```
+
+  All sokol samples have been updated to use sokol_log.h for logging.
+
+  The former logging callback is now a combined
+  logging- and error-reporting callback, and more information is available
+  to the logging function:
+    - a 'tag string' which identifies the sokol headers, this string
+      is identical with the API prefix (e.g. "sg" for sokol_gfx.h,
+      "sapp" for sokol_app.h etc...)
+    - a numeric log level: 0=panic, 1=error, 2=warning, 3=info
+    - a numeric 'log item id' (think of it as error code, but since
+      not only errors are reported I called it a log item id)
+    - a human readable error message
+    - a source file line number where the log item was reported
+    - the file path of the sokol header
+
+  Log level ```panic``` is special in that it terminates execution inside
+  the log function. When a sokol header issues a panic log message, it means
+  that the problem is so big that execution can not continue. By default,
+  the sokol headers and the standard log function in sokol_log.h call
+  ```abort()``` when a panic log message is issued.
+
+  In debug mode (NDEBUG not defined, or SOKOL_DEBUG defined), a log message
+  (in this case from sokol_spine.h) will look like this:
+
+  ```
+  [sspine][error][id:12] /Users/floh/projects/sokol/util/sokol_spine.h:3472:0:
+      SKELETON_DESC_NO_ATLAS: no atlas object provided in sspine_skeleton_desc.atlas
+  ```
+  The information can be 'parsed' like this:
+    - ```[sspine]```: it's a message from sokol_spine.h
+    - ```[error]```: it's an error
+    - ```[id:12]```: the numeric log item id (associated with ```SKELETON_DESC_NO_ATLAS``` below)
+    - source file path and line number in a compiler-specific format - in some IDEs and terminals
+      this is a clickable link
+    - the line below is the human readable log item id and message
+
+  In release mode (NDEBUG is defined and SOKOL_DEBUG is not defined), log messages
+  are drastically reduced (the reason is to not bloat the executable with all the extra string data):
+
+  ```
+  [sspine][error][id:12][line:3472]
+  ```
+  ...this reduced information still gives all the necessary information to identify the location and type of error.
+
+  A custom logging function must adhere to a few rules:
+
+    - must be re-entrant because it might be called from different threads
+    - must treat **all** provided string pointers as optional (can be null)
+    - don't store the string pointers, copy the string data instead
+    - must not return for log level panic
+
+  A new header ```sokol_log.h``` has been added to provide a standard logging callback implementation
+  which provides logging output on all platforms to stderr and/or platform specific logging
+  facilities. ```sokol_log.h``` only uses fputs() and platform specific logging function instead
+  of fprintf() to preverse some executable size.
+
+  **QUESTION**: Why are the sokol headers now silent, unless a logging callback is installed?
+  This is mainly because a standard logging function which does something meaningful on all
+  platforms (including Windows and Android) isn't trivial. E.g. printing to stderr is not
+  enough. It's better to move that stuff into a centralized place in a separate header,
+  but since the core sokol headers must not (statically) depend on other sokol headers
+  the only solution that made sense was to provide a standard logging function which must
+  be 'registered' as a callback.
+
 - **26-Jan-2023**: Work on SRGB support in sokol_gfx.h has started, but
   this requires more effort to be really usable. For now, only a new
   pixel format has been added: SG_PIXELFORMAT_SRGB8A8 (see https://github.com/floooh/sokol/pull/758,
@@ -147,7 +287,7 @@
     was used. The fetched data is now accessible through an ```sfetch_range_t data```
     item (```data.ptr``` and ```data.size```). The old ```.fetched_offset``` item
     has been renamed to ```.data_offset``` to better conform with the new naming.
-  - The last two occurances of discrete ptr/size pairs in sokol_app.h now have also
+  - The last two occurrences of discrete ptr/size pairs in sokol_app.h now have also
     been replaced with ```sapp_range_t``` items, this only affects the structs
     ```sapp_html5_fetch_request``` and ```sapp_html5_fetch_response```.
 
@@ -185,7 +325,7 @@
   in sokol_app.h, sokol_args.h, sokol_audio.h and sokol_fetch.h:
   - the JS code has been 'modernized' (e.g. const and let instead of var,
     ```() => { ... }``` instead of ```function () { ... }``` for callbacks)
-  - false positives in the Closure static analysis have been supressed
+  - false positives in the Closure static analysis have been suppressed
     via inline hints
 
 - **16-Oct-2022** The Odin bindings generator and the generated bindings have
@@ -205,7 +345,7 @@
     The new Emscripten SDK also displays a couple of Javascript "static analyzer" warnings
     by the Closure compiler (used in release mode to optimize and minify the generated
     JS code). I fixed a couple of those warnings, but some warnings persist (all of them
-    false positives). Not sure yet if these can be fixed or need to be supressed, but
+    false positives). Not sure yet if these can be fixed or need to be suppressed, but
     that's for another time.
     - the webkitAudioContext() fallback in sokol_audio.h's Emscripten backend
     has been removed (only AudioContext is supported now), the fallback also
@@ -251,7 +391,7 @@
     - sokol_imgui.h will now set the cursor type via ```sapp_set_mouse_cursor()```. This can be
       disabled with the new ```simgui_desc_t``` item ```disable_set_mouse_cursor```.
     - sokol_imgui.h now automatically enables resizing windows from edges (not just the bottom-right corner),
-      this behavour can be disabled with the new ```simgui_desc_t``` item ```disable_windows_resize_from_edges```.
+      this behaviour can be disabled with the new ```simgui_desc_t``` item ```disable_windows_resize_from_edges```.
     - sokol_imgui.h can now optionally write to the alpha channel (useful if you want to render the UI
       into a separate render target, which is later composed onto the default framebuffer). The feature
       is enabled with the new ```simgui_desc_t``` item ```write_alpha_channel```.
@@ -613,7 +753,7 @@ so that it's easier to publish new bindings after updates to the sokol headers).
     ago (around iOS 12.x) MTKView started to ignore the contentScaleFactor
     property, which lead to sokol_app.h always setting up a HighDPI
     framebuffer even when sapp_desc.high_dpi wasn't set. The fix is to set
-    the MTKView's drawableSize explicitely now.
+    the MTKView's drawableSize explicitly now.
     - The iOS GL backend didn't support MSAA multisampling so far, this has
     been fixed now, but only one MSAA mode (4x) is available, which will be
     selected when sapp_desc.sample_count is greater than 1.
@@ -667,7 +807,7 @@ uses the **AVAudioSession** class to activate and deactivate audio output as nee
 This fixes sokol_audio.h for iPhones (so far, sokol_audio.h accidentally only worked
 for iPads). Please see [this issue](https://github.com/floooh/sokol/issues/431) for details.
 A somewhat unfortunate side effect of this fix is that sokol_audio.h must now be compiled
-as Objective-C when targetting iOS, also note that a new framework must be linked: ```AVFoundation```.
+as Objective-C when targeting iOS, also note that a new framework must be linked: ```AVFoundation```.
 Many thanks to @oviano for providing the PR!
 
 - **14-Feb-2021**: The Dear ImGui rendering backend in [sokol_imgui.h](https://github.com/floooh/sokol/blob/master/util/sokol_imgui.h) has been rewritten to only do a single
